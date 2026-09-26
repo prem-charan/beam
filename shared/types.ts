@@ -9,6 +9,7 @@ export type Message = {
         | "VIEWER_JOINED"
         | "OFFER"
         | "ANSWER"
+        | "ICE_CANDIDATE"
         | "ERROR";
     roomId?: string;
     clientId?: string;
@@ -17,4 +18,5 @@ export type Message = {
     message?: string;
     offer?: RTCSessionDescriptionInit;
     answer?: RTCSessionDescriptionInit;
+    candidate?: RTCIceCandidateInit;
 };

@@ -127,11 +127,10 @@ export function setupWebSocket(server: Server) {
                         return;
                     }
 
-                    const signalingMessage = {
+                    targetSocket.send(JSON.stringify({
                         ...message,
                         senderClientId: clientId,
-                    };
-                    targetSocket.send(JSON.stringify(signalingMessage));
+                    }));
                     return;
                 }
                 socket.send(
