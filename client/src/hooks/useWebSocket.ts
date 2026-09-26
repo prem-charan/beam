@@ -1,8 +1,10 @@
-import { useEffect, useRef } from "react";
-
+import { useEffect, useRef, useState } from "react";
+import type { Message } from "@live-streaming-app/shared";
 
 export function useWebSocket() {
     const socketRef = useRef<WebSocket | null>(null);
+    const [message, setMessage] = useState<Message | null>(null);
+    const [cliendId, setCliendId] = useState<string | null>(null);
 
     useEffect(() => {
         const socket = new WebSocket("ws://localhost:3000");
@@ -11,8 +13,13 @@ export function useWebSocket() {
             console.log("websocket connected");
         };
         socket.onmessage = (event) => {
-            const message = JSON.parse(event.data);
+            const message: Message = JSON.parse(event.data);
             console.log("server: ", message);
+
+            if (message.type === "CONNECTED" && message.clientId) {
+                setCliendId(message.clientId);
+            }
+            setMessage(message);
         };
         socket.onclose = () => {
             console.log("websocket disconnected");
@@ -24,7 +31,7 @@ export function useWebSocket() {
             socket.close();
         };
     }, []);
-    function send(message: object) {
+    function send(message: Message) {
         const socket = socketRef.current;
         if (!socket || socket.readyState !== WebSocket.OPEN) {
             console.error("websocket is not connected");
@@ -32,5 +39,9 @@ export function useWebSocket() {
         }
         socket.send(JSON.stringify(message));
     }
-    return { send };
+    return {
+        send,
+        message,
+        cliendId,
+    };
 }

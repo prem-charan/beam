@@ -4,9 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-      "dev": "nodemon",
-      "build": "tsc",
-      "start": "node dist/index.js"
+    "dev": "nodemon",
+    "build": "tsc",
+    "start": "node dist/index.js"
   },
   "keywords": [],
   "author": "",
@@ -27,6 +27,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
+    "@live-streaming-app/shared": "workspace:*",
     "ws": "^8.21.3"
   }
 }

@@ -207,6 +207,9 @@ importers:
 
   .:
     dependencies:
+      '@live-streaming-app/shared':
+        specifier: workspace:*
+        version: link:../shared
       ws:
         specifier: ^8.21.3
         version: 8.21.3

@@ -3,12 +3,7 @@ import type { Server } from "http";
 import { createRoom, deleteRoom, getRoom } from "./rooms.js";
 import { randomUUID } from "crypto";
 import { WebSocket } from "ws";
-
-type Message = {
-    type: string;
-    roomId?: string;
-    targetClientId?: string;
-};
+import type { Message } from "@live-streaming-app/shared";
 
 const clients = new Map<string, WebSocket>(); // mapping clients to websocket
 const clientRooms = new Map<string, string>(); // mapping clients to rooms
@@ -131,7 +126,12 @@ export function setupWebSocket(server: Server) {
                         );
                         return;
                     }
-                    targetSocket.send(JSON.stringify(message));
+
+                    const signalingMessage = {
+                        ...message,
+                        senderClientId: clientId,
+                    };
+                    targetSocket.send(JSON.stringify(signalingMessage));
                     return;
                 }
                 socket.send(
