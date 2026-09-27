@@ -6,6 +6,7 @@ function App() {
     const [roomId, setRoomId] = useState("");
     const peerConnections = useRef(new Map<string, RTCPeerConnection>());
     const pendingCandidates = useRef(new Map<string, RTCIceCandidateInit[]>());
+    const localStream = useRef<MediaStream | null>(null);
 
     function createRoom() {
         if (!roomId.trim()) {
@@ -46,10 +47,6 @@ function App() {
                     urls: "stun:stun.l.google.com:19302",
                 },
             ],
-        });
-
-        peerConnection.addTransceiver("video", {
-            direction: "sendonly",
         });
 
         peerConnections.current.set(viewerClientId, peerConnection);
@@ -95,22 +92,75 @@ function App() {
 
         async function createOffer() {
             try {
-                const offer = await peerConnection.createOffer();
-
-                await peerConnection.setLocalDescription(offer);
+                console.log("1. createOffer started");
+        
+                if (!localStream.current) {
+                    console.log("2. requesting camera + microphone");
+        
+                    localStream.current =
+                        await navigator.mediaDevices.getUserMedia({
+                            video: true,
+                            audio: true,
+                        });
+        
+                    console.log(
+                        "3. local media stream:",
+                        localStream.current
+                    );
+                }
+        
                 console.log(
-                    "HOST local description set:",
-                    peerConnection.localDescription,
+                    "4. tracks:",
+                    localStream.current.getTracks()
                 );
-
+        
+                localStream.current.getTracks().forEach((track) => {
+                    console.log(
+                        "5. adding track:",
+                        track.kind,
+                        track.readyState,
+                        track.enabled
+                    );
+        
+                    peerConnection.addTrack(
+                        track,
+                        localStream.current!
+                    );
+                });
+        
+                console.log(
+                    "6. senders:",
+                    peerConnection.getSenders()
+                );
+        
+                console.log("7. creating offer");
+        
+                const offer = await peerConnection.createOffer();
+        
+                console.log("8. offer created:", offer);
+        
+                await peerConnection.setLocalDescription(offer);
+        
+                console.log(
+                    "9. local description:",
+                    peerConnection.localDescription
+                );
+        
                 send({
                     type: "OFFER",
                     targetClientId: viewerClientId,
                     offer: peerConnection.localDescription,
                 });
-                console.log("HOST OFFER sent to:", viewerClientId);
+        
+                console.log(
+                    "10. OFFER sent to:",
+                    viewerClientId
+                );
             } catch (error) {
-                console.error("HOST failed to create offer:", error);
+                console.error(
+                    "HOST FAILED:",
+                    error
+                );
             }
         }
         createOffer();
