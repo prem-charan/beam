@@ -7,11 +7,36 @@ function App() {
     const peerConnections = useRef(new Map<string, RTCPeerConnection>());
     const pendingCandidates = useRef(new Map<string, RTCIceCandidateInit[]>());
     const localStream = useRef<MediaStream | null>(null);
+    const localVideoRef = useRef<HTMLVideoElement | null>(null);
+    const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
 
-    function createRoom() {
+    async function createRoom() {
         if (!roomId.trim()) {
             return;
         }
+
+        try {
+            if (!localStream.current) {
+                console.log("requesting camera + microphone for preview");
+                localStream.current = await navigator.mediaDevices.getUserMedia(
+                    {
+                        video: true,
+                        audio: true,
+                    },
+                );
+            }
+
+            if (localVideoRef.current) {
+                localVideoRef.current.srcObject = localStream.current;
+                localVideoRef.current.play().catch((error) => {
+                    console.error("Local video play() blocked:", error);
+                });
+            }
+        } catch (error) {
+            console.error("Failed to access camera/microphone:", error);
+            return;
+        }
+
         send({
             type: "CREATE_ROOM",
             roomId: roomId.trim(),
@@ -93,74 +118,56 @@ function App() {
         async function createOffer() {
             try {
                 console.log("1. createOffer started");
-        
+
                 if (!localStream.current) {
                     console.log("2. requesting camera + microphone");
-        
+
                     localStream.current =
                         await navigator.mediaDevices.getUserMedia({
                             video: true,
                             audio: true,
                         });
-        
-                    console.log(
-                        "3. local media stream:",
-                        localStream.current
-                    );
+
+                    console.log("3. local media stream:", localStream.current);
                 }
-        
-                console.log(
-                    "4. tracks:",
-                    localStream.current.getTracks()
-                );
-        
+
+                console.log("4. tracks:", localStream.current.getTracks());
+
                 localStream.current.getTracks().forEach((track) => {
                     console.log(
                         "5. adding track:",
                         track.kind,
                         track.readyState,
-                        track.enabled
+                        track.enabled,
                     );
-        
-                    peerConnection.addTrack(
-                        track,
-                        localStream.current!
-                    );
+
+                    peerConnection.addTrack(track, localStream.current!);
                 });
-        
-                console.log(
-                    "6. senders:",
-                    peerConnection.getSenders()
-                );
-        
+
+                console.log("6. senders:", peerConnection.getSenders());
+
                 console.log("7. creating offer");
-        
+
                 const offer = await peerConnection.createOffer();
-        
+
                 console.log("8. offer created:", offer);
-        
+
                 await peerConnection.setLocalDescription(offer);
-        
+
                 console.log(
                     "9. local description:",
-                    peerConnection.localDescription
+                    peerConnection.localDescription,
                 );
-        
+
                 send({
                     type: "OFFER",
                     targetClientId: viewerClientId,
                     offer: peerConnection.localDescription,
                 });
-        
-                console.log(
-                    "10. OFFER sent to:",
-                    viewerClientId
-                );
+
+                console.log("10. OFFER sent to:", viewerClientId);
             } catch (error) {
-                console.error(
-                    "HOST FAILED:",
-                    error
-                );
+                console.error("HOST FAILED:", error);
             }
         }
         createOffer();
@@ -234,13 +241,24 @@ function App() {
         };
         peerConnection.ontrack = (event) => {
             console.log("VIEWER received remote track:", event.track);
+            const [remoteStream] = event.streams;
+            if (
+                remoteVideoRef.current &&
+                remoteVideoRef.current.srcObject !== remoteStream
+            ) {
+                remoteVideoRef.current.srcObject = remoteStream;
+                remoteVideoRef.current.play().catch((error) => {
+                    console.error("VIEWER remote video play() blocked:", error);
+                });
+            }
         };
 
         async function createAnswer() {
             try {
                 await peerConnection.setRemoteDescription(message.offer!);
                 console.log("VIEWER remote description set");
-                const pending = pendingCandidates.current.get(hostClientId) ?? [];
+                const pending =
+                    pendingCandidates.current.get(hostClientId) ?? [];
 
                 for (const candidate of pending) {
                     await peerConnection.addIceCandidate(candidate);
@@ -382,6 +400,33 @@ function App() {
             <button onClick={createRoom}>Create Room</button>
 
             <button onClick={joinRoom}>Join Room</button>
+
+            <div style={{ display: "flex", gap: "1rem", marginTop: "1rem" }}>
+                <div>
+                    <h3>Your camera (local preview)</h3>
+                    <video
+                        ref={localVideoRef}
+                        autoPlay
+                        playsInline
+                        muted
+                        style={{
+                            width: "320px",
+                            background: "#000",
+                            transform: "scaleX(-1)",
+                        }}
+                    />
+                </div>
+
+                <div>
+                    <h3>Remote stream (viewer side)</h3>
+                    <video
+                        ref={remoteVideoRef}
+                        autoPlay
+                        playsInline
+                        style={{ width: "320px", background: "#000" }}
+                    />
+                </div>
+            </div>
 
             <h2>Server Message</h2>
 
