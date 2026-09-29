@@ -53,6 +53,58 @@ function App() {
         });
     }
 
+    function leaveRoom() {
+        send({ type: "LEAVE_ROOM" });
+
+        peerConnections.current.forEach((peerConnection) => {
+            peerConnection.close();
+        });
+        peerConnections.current.clear();
+        pendingCandidates.current.clear();
+        if (localStream.current) {
+            localStream.current.getTracks().forEach((track) => track.stop());
+            localStream.current = null;
+        }
+        if (localVideoRef.current) {
+            localVideoRef.current.srcObject = null;
+        }
+        if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = null;
+        }
+
+        setRoomId("");
+        console.log("left room, cleaned up all connections and media");
+    }
+
+    useEffect(() => {
+        window.addEventListener("pagehide", leaveRoom);
+        return () => {
+            window.removeEventListener("pagehide", leaveRoom);
+        };
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    useEffect(() => {
+        if (message?.type === "HOST_LEFT") {
+            console.log("host left the room, cleaning up");
+            queueMicrotask(() => leaveRoom());
+            return;
+        }
+
+        if (message?.type === "VIEWER_LEFT" && message.clientId) {
+            const viewerClientId = message.clientId;
+            console.log("viewer left:", viewerClientId);
+
+            const peerConnection = peerConnections.current.get(viewerClientId);
+            if (peerConnection) {
+                peerConnection.close();
+                peerConnections.current.delete(viewerClientId);
+            }
+            pendingCandidates.current.delete(viewerClientId);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [message]);
+
     useEffect(() => {
         if (message?.type !== "VIEWER_JOINED") {
             return;
@@ -400,6 +452,8 @@ function App() {
             <button onClick={createRoom}>Create Room</button>
 
             <button onClick={joinRoom}>Join Room</button>
+
+            <button onClick={leaveRoom}>Leave Room</button>
 
             <div style={{ display: "flex", gap: "1rem", marginTop: "1rem" }}>
                 <div>

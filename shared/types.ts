@@ -10,6 +10,9 @@ export type Message = {
         | "OFFER"
         | "ANSWER"
         | "ICE_CANDIDATE"
+        | "LEAVE_ROOM"
+        | "HOST_LEFT"
+        | "VIEWER_LEFT"
         | "ERROR";
     roomId?: string;
     clientId?: string;

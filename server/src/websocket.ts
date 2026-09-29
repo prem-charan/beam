@@ -8,6 +8,34 @@ import type { Message } from "@live-streaming-app/shared";
 const clients = new Map<string, WebSocket>(); // mapping clients to websocket
 const clientRooms = new Map<string, string>(); // mapping clients to rooms
 
+function handleLeave(clientId: string, socket: WebSocket, roomId: string) {
+    const room = getRoom(roomId);
+    if (!room) {
+        return;
+    }
+
+    if (room.host === socket) {
+        room.host = null;
+        console.log(`host left room ${roomId}`);
+        room.viewers.forEach((viewerSocket) => {
+            viewerSocket.send(JSON.stringify({ type: "HOST_LEFT" }));
+        });
+    } else {
+        room.viewers.delete(socket);
+        console.log(`viewer left room ${roomId}`);
+        if (room.host) {
+            room.host.send(
+                JSON.stringify({ type: "VIEWER_LEFT", clientId }),
+            );
+        }
+    }
+
+    if (!room.host && room.viewers.size === 0) {
+        deleteRoom(roomId);
+        console.log(`room ${roomId} deleted`);
+    }
+}
+
 export function setupWebSocket(server: Server) {
     const wss = new WebSocketServer({ server });
 
@@ -105,6 +133,14 @@ export function setupWebSocket(server: Server) {
                     console.log(`viewer joined room ${message.roomId}`);
                     return;
                 }
+                if (message.type === "LEAVE_ROOM") {
+                    if (currentRoomId) {
+                        handleLeave(clientId, socket, currentRoomId);
+                        clientRooms.delete(clientId);
+                        currentRoomId = null;
+                    }
+                    return;
+                }
                 if (message.targetClientId) {
                     const targetSocket = clients.get(message.targetClientId);
                     if (!targetSocket) {
@@ -152,23 +188,8 @@ export function setupWebSocket(server: Server) {
             clients.delete(clientId);
             clientRooms.delete(clientId);
             console.log(`websocket client disconnected: ${clientId}`);
-            if (!currentRoomId) {
-                return;
-            }
-            const room = getRoom(currentRoomId);
-            if (!room) {
-                return;
-            }
-            if (room.host === socket) {
-                room.host = null;
-                console.log(`host left room ${currentRoomId}`);   
-            } else {
-                room.viewers.delete(socket);
-                console.log(`viewer left room ${currentRoomId}`);
-            }
-            if (!room.host && room.viewers.size === 0) {
-                deleteRoom(currentRoomId);
-                console.log(`room ${currentRoomId} deleted`);
+            if (currentRoomId) {
+                handleLeave(clientId, socket, currentRoomId);
             }
         });
     });
