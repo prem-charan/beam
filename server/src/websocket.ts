@@ -8,6 +8,23 @@ import type { Message } from "@live-streaming-app/shared";
 const clients = new Map<string, WebSocket>(); // mapping clients to websocket
 const clientRooms = new Map<string, string>(); // mapping clients to rooms
 
+function broadcastRoomCount(roomId: string) {
+    const room = getRoom(roomId);
+    if (!room) {
+        return;
+    }
+
+    const count = (room.host ? 1 : 0) + room.viewers.size;
+    const payload = JSON.stringify({ type: "ROOM_COUNT", count });
+
+    if (room.host) {
+        room.host.send(payload);
+    }
+    room.viewers.forEach((viewerSocket) => {
+        viewerSocket.send(payload);
+    });
+}
+
 function handleLeave(clientId: string, socket: WebSocket, roomId: string) {
     const room = getRoom(roomId);
     if (!room) {
@@ -33,6 +50,8 @@ function handleLeave(clientId: string, socket: WebSocket, roomId: string) {
     if (!room.host && room.viewers.size === 0) {
         deleteRoom(roomId);
         console.log(`room ${roomId} deleted`);
+    } else {
+        broadcastRoomCount(roomId);
     }
 }
 
@@ -81,6 +100,7 @@ export function setupWebSocket(server: Server) {
                             roomId: message.roomId,
                         }),
                     );
+                    broadcastRoomCount(message.roomId);
                     console.log(`Room ${message.roomId} created`);
                     return;
                 }
@@ -130,6 +150,7 @@ export function setupWebSocket(server: Server) {
                             }),
                         );
                     }
+                    broadcastRoomCount(message.roomId);
                     console.log(`viewer joined room ${message.roomId}`);
                     return;
                 }

@@ -13,6 +13,7 @@ export type Message = {
         | "LEAVE_ROOM"
         | "HOST_LEFT"
         | "VIEWER_LEFT"
+        | "ROOM_COUNT"
         | "ERROR";
     roomId?: string;
     clientId?: string;
@@ -22,4 +23,5 @@ export type Message = {
     offer?: RTCSessionDescriptionInit;
     answer?: RTCSessionDescriptionInit;
     candidate?: RTCIceCandidateInit;
+    count?: number;
 };
