@@ -4,7 +4,7 @@ import type { Message } from "@live-streaming-app/shared";
 export function useWebSocket() {
     const socketRef = useRef<WebSocket | null>(null);
     const [messages, setMessages] = useState<Message[]>([]);
-    const [cliendId, setCliendId] = useState<string | null>(null);
+    const [clientId, setclientId] = useState<string | null>(null);
 
     useEffect(() => {
         const socket = new WebSocket("ws://localhost:3000");
@@ -17,7 +17,7 @@ export function useWebSocket() {
             console.log("server: ", message);
 
             if (message.type === "CONNECTED" && message.clientId) {
-                setCliendId(message.clientId);
+                setclientId(message.clientId);
             }
             setMessages((prev) => [...prev, message]);
         };
@@ -42,6 +42,6 @@ export function useWebSocket() {
     return {
         send,
         messages,
-        cliendId,
+        clientId,
     };
 }

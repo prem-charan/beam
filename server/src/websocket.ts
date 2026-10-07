@@ -150,6 +150,16 @@ export function setupWebSocket(server: Server) {
                             }),
                         );
                     }
+                    room.viewers.forEach((viewerSocket) => {
+                        if (viewerSocket !== socket) {
+                            viewerSocket.send(
+                                JSON.stringify({
+                                    type: "VIEWER_JOINED",
+                                    clientId,
+                                }),
+                            );
+                        }
+                    });
                     broadcastRoomCount(message.roomId);
                     console.log(`viewer joined room ${message.roomId}`);
                     return;

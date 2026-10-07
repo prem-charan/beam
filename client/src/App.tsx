@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useWebSocket } from "./hooks/useWebSocket";
 
 function App() {
-    const { send, messages, cliendId } = useWebSocket();
+    const { send, messages, clientId } = useWebSocket();
     const [roomId, setRoomId] = useState("");
     const [roomCount, setRoomCount] = useState(0);
     const [inRoom, setInRoom] = useState(false);
@@ -12,7 +12,10 @@ function App() {
     const pendingCandidates = useRef(new Map<string, RTCIceCandidateInit[]>());
     const localStream = useRef<MediaStream | null>(null);
     const localVideoRef = useRef<HTMLVideoElement | null>(null);
-    const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+    const [participants, setParticipants] = useState<
+        Map<string, MediaStream | null>
+    >(new Map());
+    const videoElements = useRef(new Map<string, HTMLVideoElement>());
 
     // each effect below tracks how many messages (from the shared queue) it has
     // already processed, so a batch of several messages arriving together never
@@ -156,15 +159,13 @@ function App() {
         if (localVideoRef.current) {
             localVideoRef.current.srcObject = null;
         }
-        if (remoteVideoRef.current) {
-            remoteVideoRef.current.srcObject = null;
-        }
 
         setRoomId("");
         setRoomCount(0);
         setInRoom(false);
         setCameraEnabled(false);
         setMicEnabled(false);
+        setParticipants(new Map());
         console.log("left room, cleaned up all connections and media");
     }
 
@@ -181,17 +182,22 @@ function App() {
         roomStatusProcessed.current = messages.length;
 
         for (const message of newMessages) {
-            if (message.type === "ROOM_CREATED" || message.type === "ROOM_JOINED") {
+            if (
+                message.type === "ROOM_CREATED" ||
+                message.type === "ROOM_JOINED"
+            ) {
                 queueMicrotask(() => setInRoom(true));
                 continue;
             }
 
-            if (message.type === "ROOM_COUNT" && typeof message.count === "number") {
+            if (
+                message.type === "ROOM_COUNT" &&
+                typeof message.count === "number"
+            ) {
                 const count = message.count;
                 queueMicrotask(() => setRoomCount(count));
             }
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [messages]);
 
     useEffect(() => {
@@ -209,12 +215,21 @@ function App() {
                 const viewerClientId = message.clientId;
                 console.log("viewer left:", viewerClientId);
 
-                const peerConnection = peerConnections.current.get(viewerClientId);
+                const peerConnection =
+                    peerConnections.current.get(viewerClientId);
                 if (peerConnection) {
                     peerConnection.close();
                     peerConnections.current.delete(viewerClientId);
                 }
                 pendingCandidates.current.delete(viewerClientId);
+
+                queueMicrotask(() => {
+                    setParticipants((prev) => {
+                        const next = new Map(prev);
+                        next.delete(viewerClientId);
+                        return next;
+                    });
+                });
             }
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -231,12 +246,15 @@ function App() {
             if (!message.clientId) {
                 continue;
             }
-            if (!cliendId) {
+            if (!clientId) {
                 continue;
             }
 
-            const viewerClientId = message.clientId;
-            console.log("viewer joined, creating peerconnection:", viewerClientId);
+            const remoteClientId = message.clientId;
+            console.log(
+                "new participant joined, creating peerconnection:",
+                remoteClientId,
+            );
             const peerConnection = new RTCPeerConnection({
                 iceServers: [
                     {
@@ -245,81 +263,114 @@ function App() {
                 ],
             });
 
-            peerConnections.current.set(viewerClientId, peerConnection);
+            peerConnections.current.set(remoteClientId, peerConnection);
             console.log("peerConnection created:", peerConnection);
 
+            queueMicrotask(() => {
+                setParticipants((prev) => {
+                    const next = new Map(prev);
+                    next.set(remoteClientId, null);
+                    return next;
+                });
+            });
+
             peerConnection.onicecandidate = (event) => {
-                console.log("HOST ICE event:", event);
+                console.log("ICE event:", event);
                 if (!event.candidate) {
-                    console.log("HOST ICE gathering complete");
+                    console.log("ICE gathering complete");
                     return;
                 }
                 send({
                     type: "ICE_CANDIDATE",
-                    targetClientId: viewerClientId,
+                    targetClientId: remoteClientId,
                     candidate: event.candidate,
                 });
-                console.log("HOST ICE candidate sent to viewer:", viewerClientId);
+                console.log("ICE candidate sent to:", remoteClientId);
             };
 
             peerConnection.onicegatheringstatechange = () => {
                 console.log(
-                    "HOST ICE gathering state:",
+                    "ICE gathering state:",
                     peerConnection.iceGatheringState,
                 );
             };
 
             peerConnection.oniceconnectionstatechange = () => {
                 console.log(
-                    "HOST ICE connection state:",
+                    "ICE connection state:",
                     peerConnection.iceConnectionState,
                 );
             };
 
             peerConnection.onconnectionstatechange = () => {
                 console.log(
-                    "HOST peer connection state:",
+                    "peer connection state:",
                     peerConnection.connectionState,
                 );
             };
             peerConnection.onicecandidateerror = (event) => {
-                console.error("HOST ICE candidate error:", event);
+                console.error("ICE candidate error:", event);
             };
 
-            peerConnection.onnegotiationneeded = async () => {
+            peerConnection.ontrack = (event) => {
+                console.log("received remote track:", event.track);
+                const [remoteStream] = event.streams;
+                setParticipants((prev) => {
+                    const next = new Map(prev);
+                    next.set(remoteClientId, remoteStream);
+                    return next;
+                });
+
+                remoteStream.onremovetrack = () => {
+                    console.log(
+                        "track removed from stream for:",
+                        remoteClientId,
+                        "remaining video tracks:",
+                        remoteStream.getVideoTracks().length,
+                    );
+                    const el = videoElements.current.get(remoteClientId);
+                    if (el && remoteStream.getVideoTracks().length === 0) {
+                        el.load();
+                    }
+                };
+            };
+
+            const negotiate = async () => {
                 try {
-                    console.log("negotiation needed for viewer:", viewerClientId);
+                    console.log("negotiating with:", remoteClientId);
                     const offer = await peerConnection.createOffer();
                     await peerConnection.setLocalDescription(offer);
                     send({
                         type: "OFFER",
-                        targetClientId: viewerClientId,
+                        targetClientId: remoteClientId,
                         offer: peerConnection.localDescription,
                     });
-                    console.log("OFFER (re)sent to:", viewerClientId);
+                    console.log("OFFER (re)sent to:", remoteClientId);
                 } catch (error) {
-                    console.error("HOST renegotiation failed:", error);
+                    console.error("negotiation failed:", error);
                 }
             };
+            peerConnection.onnegotiationneeded = negotiate;
 
             if (localStream.current) {
                 localStream.current.getTracks().forEach((track) => {
                     console.log(
-                        "adding existing track to new viewer:",
+                        "adding existing track for new participant:",
                         track.kind,
                         track.readyState,
                         track.enabled,
                     );
                     peerConnection.addTrack(track, localStream.current!);
                 });
+                // addTrack above triggers onnegotiationneeded automatically
             } else {
                 console.log(
-                    "no local media yet, viewer will wait until camera/mic is enabled",
+                    "no local media yet, negotiating an empty connection so the other side can add their own media later",
                 );
+                negotiate();
             }
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [messages, cliendId, send]);
+    }, [messages, clientId, send]);
 
     useEffect(() => {
         const newMessages = messages.slice(offerProcessed.current);
@@ -339,9 +390,10 @@ function App() {
                 continue;
             }
 
-            const hostClientId = message.senderClientId;
+            const remoteClientId = message.senderClientId;
             const offer = message.offer;
-            const existingConnection = peerConnections.current.get(hostClientId);
+            const existingConnection =
+                peerConnections.current.get(remoteClientId);
             const peerConnection =
                 existingConnection ??
                 new RTCPeerConnection({
@@ -354,124 +406,141 @@ function App() {
 
             if (!existingConnection) {
                 console.log(
-                    "OFFER received from host (new connection):",
-                    hostClientId,
+                    "OFFER received (new connection) from:",
+                    remoteClientId,
                 );
-                peerConnections.current.set(hostClientId, peerConnection);
+                peerConnections.current.set(remoteClientId, peerConnection);
+
+                queueMicrotask(() => {
+                    setParticipants((prev) => {
+                        const next = new Map(prev);
+                        next.set(remoteClientId, null);
+                        return next;
+                    });
+                });
 
                 peerConnection.onicecandidate = (event) => {
-                    console.log("VIEWER ICE event:", event);
+                    console.log("ICE event:", event);
                     if (!event.candidate) {
-                        console.log("VIEWER ICE gathering complete");
+                        console.log("ICE gathering complete");
                         return;
                     }
 
                     send({
                         type: "ICE_CANDIDATE",
-                        targetClientId: hostClientId,
+                        targetClientId: remoteClientId,
                         candidate: event.candidate,
                     });
-                    console.log("VIEWER ICE candidate sent to host:", hostClientId);
+                    console.log("ICE candidate sent to:", remoteClientId);
                 };
 
                 peerConnection.onicegatheringstatechange = () => {
                     console.log(
-                        "VIEWER ICE gathering state:",
+                        "ICE gathering state:",
                         peerConnection.iceGatheringState,
                     );
                 };
 
                 peerConnection.oniceconnectionstatechange = () => {
                     console.log(
-                        "VIEWER ICE connection state:",
+                        "ICE connection state:",
                         peerConnection.iceConnectionState,
                     );
                 };
 
                 peerConnection.onconnectionstatechange = () => {
                     console.log(
-                        "VIEWER peer connection state:",
+                        "peer connection state:",
                         peerConnection.connectionState,
                     );
                 };
 
                 peerConnection.onicecandidateerror = (event) => {
-                    console.error("VIEWER ICE candidate error:", event);
+                    console.error("ICE candidate error:", event);
                 };
-                peerConnection.ontrack = (event) => {
-                    console.log("VIEWER received remote track:", event.track);
-                    const [remoteStream] = event.streams;
-                    if (
-                        remoteVideoRef.current &&
-                        remoteVideoRef.current.srcObject !== remoteStream
-                    ) {
-                        remoteVideoRef.current.srcObject = remoteStream;
-                        remoteVideoRef.current.play().catch((error) => {
-                            console.error(
-                                "VIEWER remote video play() blocked:",
-                                error,
-                            );
+
+                peerConnection.onnegotiationneeded = async () => {
+                    try {
+                        console.log("negotiating with:", remoteClientId);
+                        const newOffer = await peerConnection.createOffer();
+                        await peerConnection.setLocalDescription(newOffer);
+                        send({
+                            type: "OFFER",
+                            targetClientId: remoteClientId,
+                            offer: peerConnection.localDescription,
                         });
+                        console.log("OFFER (re)sent to:", remoteClientId);
+                    } catch (error) {
+                        console.error("negotiation failed:", error);
                     }
+                };
+
+                peerConnection.ontrack = (event) => {
+                    console.log("received remote track:", event.track);
+                    const [remoteStream] = event.streams;
+                    setParticipants((prev) => {
+                        const next = new Map(prev);
+                        next.set(remoteClientId, remoteStream);
+                        return next;
+                    });
 
                     remoteStream.onremovetrack = () => {
                         console.log(
-                            "remote track removed, remaining video tracks:",
+                            "track removed from stream for:",
+                            remoteClientId,
+                            "remaining video tracks:",
                             remoteStream.getVideoTracks().length,
                         );
-                        if (
-                            remoteStream.getVideoTracks().length === 0 &&
-                            remoteVideoRef.current
-                        ) {
-                            remoteVideoRef.current.srcObject = null;
+                        const el = videoElements.current.get(remoteClientId);
+                        if (el && remoteStream.getVideoTracks().length === 0) {
+                            el.load();
                         }
                     };
                 };
             } else {
                 console.log(
-                    "OFFER received from host (renegotiation):",
-                    hostClientId,
+                    "OFFER received (renegotiation) from:",
+                    remoteClientId,
                 );
             }
 
             (async () => {
                 try {
                     await peerConnection.setRemoteDescription(offer);
-                    console.log("VIEWER remote description set");
+                    console.log("remote description set");
                     const pending =
-                        pendingCandidates.current.get(hostClientId) ?? [];
+                        pendingCandidates.current.get(remoteClientId) ?? [];
 
                     for (const candidate of pending) {
                         await peerConnection.addIceCandidate(candidate);
                         console.log(
-                            "VIEWER queued ICE candidate added from:",
-                            hostClientId,
+                            "queued ICE candidate added from:",
+                            remoteClientId,
                         );
                     }
-                    pendingCandidates.current.delete(hostClientId);
+                    pendingCandidates.current.delete(remoteClientId);
 
                     const answer = await peerConnection.createAnswer();
 
                     await peerConnection.setLocalDescription(answer);
                     console.log(
-                        "VIEWER local answer description set:",
+                        "local answer description set:",
                         peerConnection.localDescription,
                     );
 
                     send({
                         type: "ANSWER",
-                        targetClientId: hostClientId,
+                        targetClientId: remoteClientId,
                         answer: peerConnection.localDescription,
                     });
 
-                    console.log("VIEWER ANSWER sent to host:", hostClientId);
+                    console.log("ANSWER sent to:", remoteClientId);
                 } catch (error) {
-                    console.error("VIEWER failed to create answer:", error);
+                    console.error("failed to create answer:", error);
                 }
             })();
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [messages, cliendId, send]);
+    }, [messages, clientId, send]);
 
     useEffect(() => {
         const newMessages = messages.slice(answerProcessed.current);
@@ -488,12 +557,12 @@ function App() {
                 continue;
             }
 
-            const viewerClientId = message.senderClientId;
+            const remoteClientId = message.senderClientId;
             const answer = message.answer;
-            console.log("ANSWER received from viewer:", viewerClientId);
-            const peerConnection = peerConnections.current.get(viewerClientId);
+            console.log("ANSWER received from:", remoteClientId);
+            const peerConnection = peerConnections.current.get(remoteClientId);
             if (!peerConnection) {
-                console.log("No peer connection found for:", viewerClientId);
+                console.log("No peer connection found for:", remoteClientId);
                 continue;
             }
 
@@ -501,26 +570,25 @@ function App() {
                 try {
                     await peerConnection.setRemoteDescription(answer);
 
-                    console.log("HOST remote answer description set");
+                    console.log("remote answer description set");
                     const pending =
-                        pendingCandidates.current.get(viewerClientId) ?? [];
+                        pendingCandidates.current.get(remoteClientId) ?? [];
 
                     for (const candidate of pending) {
                         await peerConnection.addIceCandidate(candidate);
 
                         console.log(
-                            "HOST queued ICE candidate added from:",
-                            viewerClientId,
+                            "queued ICE candidate added from:",
+                            remoteClientId,
                         );
                     }
 
-                    pendingCandidates.current.delete(viewerClientId);
+                    pendingCandidates.current.delete(remoteClientId);
                 } catch (error) {
-                    console.error("HOST failed to set answer:", error);
+                    console.error("failed to set answer:", error);
                 }
             })();
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [messages]);
 
     useEffect(() => {
@@ -560,7 +628,10 @@ function App() {
 
                         candidates.push(candidate);
 
-                        pendingCandidates.current.set(remoteClientId, candidates);
+                        pendingCandidates.current.set(
+                            remoteClientId,
+                            candidates,
+                        );
 
                         return;
                     }
@@ -573,7 +644,6 @@ function App() {
                 }
             })();
         }
-        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [messages]);
 
     return (
@@ -597,7 +667,9 @@ function App() {
                 Camera: {cameraEnabled ? "On" : "Off"}
             </button>
 
-            <button onClick={toggleMic}>Mic: {micEnabled ? "On" : "Off"}</button>
+            <button onClick={toggleMic}>
+                Mic: {micEnabled ? "On" : "Off"}
+            </button>
 
             {inRoom && <p>People in room: {roomCount}</p>}
 
@@ -617,21 +689,40 @@ function App() {
                     />
                 </div>
 
-                <div>
-                    <h3>Remote stream (viewer side)</h3>
-                    <video
-                        ref={remoteVideoRef}
-                        autoPlay
-                        playsInline
-                        style={{ width: "320px", background: "#000" }}
-                    />
-                </div>
+                {Array.from(participants.entries()).map(([id, stream]) => (
+                    <div key={id}>
+                        <h3>Participant {id.slice(0, 8)}</h3>
+                        <video
+                            ref={(el) => {
+                                if (el) {
+                                    videoElements.current.set(id, el);
+                                    if (el.srcObject !== stream) {
+                                        el.srcObject = stream;
+                                        el.play().catch((error) => {
+                                            console.error(
+                                                "tile video play() blocked:",
+                                                error,
+                                            );
+                                        });
+                                    }
+                                } else {
+                                    videoElements.current.delete(id);
+                                }
+                            }}
+                            autoPlay
+                            playsInline
+                            style={{ width: "320px", background: "#000" }}
+                        />
+                    </div>
+                ))}
             </div>
 
             <h2>Server Message</h2>
 
             {messages.length > 0 && (
-                <pre>{JSON.stringify(messages[messages.length - 1], null, 2)}</pre>
+                <pre>
+                    {JSON.stringify(messages[messages.length - 1], null, 2)}
+                </pre>
             )}
         </div>
     );
