@@ -1,13 +1,47 @@
 import { useEffect, useRef, useState } from "react";
 import { useWebSocket } from "./hooks/useWebSocket";
+import "./App.css";
+
+type View = "landing" | "waiting" | "in-room";
+
+function roomCodeFromPath(): string {
+    const match = window.location.pathname.match(/^\/r\/([A-Za-z0-9]{6})$/);
+    return match ? match[1].toUpperCase() : "";
+}
+
+// Accepts either a bare code ("AB3XQ9") or a full pasted link
+// ("http://host/r/AB3XQ9") and extracts just the code. Specifically looks
+// for the /r/<code> pattern rather than "the first 6-character run of
+// letters/digits", since a full URL can easily contain an unrelated
+// 6-character run (e.g. "localhost" would otherwise wrongly match "LOCALH").
+function extractRoomCode(input: string): string {
+    const trimmed = input.trim();
+    const pathMatch = trimmed.match(/\/r\/([A-Za-z0-9]{6})/);
+    return (pathMatch ? pathMatch[1] : trimmed).toUpperCase();
+}
 
 function App() {
     const { send, messages, clientId } = useWebSocket();
+
+    const [view, setView] = useState<View>("landing");
+    const [displayName, setDisplayName] = useState("");
+    const [joinCodeInput, setJoinCodeInput] = useState(() => roomCodeFromPath());
     const [roomId, setRoomId] = useState("");
+    const [isHost, setIsHost] = useState(false);
+    const [formError, setFormError] = useState<string | null>(null);
+    const [linkCopied, setLinkCopied] = useState(false);
+
     const [roomCount, setRoomCount] = useState(0);
-    const [inRoom, setInRoom] = useState(false);
     const [cameraEnabled, setCameraEnabled] = useState(false);
     const [micEnabled, setMicEnabled] = useState(false);
+    const [mediaError, setMediaError] = useState<string | null>(null);
+    const [pendingRequests, setPendingRequests] = useState<Map<string, string>>(
+        new Map(),
+    );
+    const [participantNames, setParticipantNames] = useState<
+        Map<string, string>
+    >(new Map());
+
     const peerConnections = useRef(new Map<string, RTCPeerConnection>());
     const pendingCandidates = useRef(new Map<string, RTCIceCandidateInit[]>());
     const localStream = useRef<MediaStream | null>(null);
@@ -16,6 +50,9 @@ function App() {
         Map<string, MediaStream | null>
     >(new Map());
     const videoElements = useRef(new Map<string, HTMLVideoElement>());
+    const micMeterRef = useRef<HTMLDivElement | null>(null);
+    const audioContextRef = useRef<AudioContext | null>(null);
+    const meterFrameRef = useRef<number | null>(null);
 
     // each effect below tracks how many messages (from the shared queue) it has
     // already processed, so a batch of several messages arriving together never
@@ -26,25 +63,49 @@ function App() {
     const offerProcessed = useRef(0);
     const answerProcessed = useRef(0);
     const iceCandidateProcessed = useRef(0);
+    const joinRequestProcessed = useRef(0);
 
     function createRoom() {
-        if (!roomId.trim()) {
+        if (!displayName.trim()) {
+            setFormError("Enter your name first");
             return;
         }
+        setFormError(null);
+        send({ type: "CREATE_ROOM", displayName: displayName.trim() });
+    }
+
+    function requestToJoin() {
+        if (!displayName.trim()) {
+            setFormError("Enter your name first");
+            return;
+        }
+        if (!joinCodeInput.trim()) {
+            setFormError("Enter a room code or link");
+            return;
+        }
+        setFormError(null);
         send({
-            type: "CREATE_ROOM",
-            roomId: roomId.trim(),
+            type: "JOIN_REQUEST",
+            roomId: extractRoomCode(joinCodeInput),
+            displayName: displayName.trim(),
+        });
+        setView("waiting");
+    }
+
+    function respondToJoinRequest(targetClientId: string, approved: boolean) {
+        send({ type: "JOIN_RESPONSE", targetClientId, approved });
+        setPendingRequests((prev) => {
+            const next = new Map(prev);
+            next.delete(targetClientId);
+            return next;
         });
     }
 
-    function joinRoom() {
-        if (!roomId.trim()) {
-            return;
+    function describeMediaError(error: unknown): string {
+        if (error instanceof DOMException) {
+            return `${error.name}: ${error.message}`;
         }
-        send({
-            type: "JOIN_ROOM",
-            roomId: roomId.trim(),
-        });
+        return String(error);
     }
 
     async function toggleCamera() {
@@ -73,6 +134,7 @@ function App() {
         }
 
         try {
+            setMediaError(null);
             const newStream = await navigator.mediaDevices.getUserMedia({
                 video: true,
             });
@@ -98,15 +160,70 @@ function App() {
             console.log("camera enabled for the first time");
         } catch (error) {
             console.error("Failed to enable camera:", error);
+            setMediaError(`Camera failed: ${describeMediaError(error)}`);
+        }
+    }
+
+    // Shows a live bar that grows with how loud your mic currently is — the
+    // only way to actually confirm a mic is picking up sound, since (unlike
+    // camera) there's nothing to visually show otherwise. AnalyserNode reads
+    // the audio stream's volume many times per second; we deliberately do
+    // NOT put that value in React state (a 60-times-a-second setState would
+    // cause a re-render every frame) and instead set the bar's width
+    // directly via a ref, bypassing React entirely for this one fast-moving
+    // value.
+    function startMicMeter(audioTrack: MediaStreamTrack) {
+        const audioContext = new AudioContext();
+        if (audioContext.state === "suspended") {
+            audioContext.resume().catch((error) => {
+                console.error("AudioContext resume() failed:", error);
+            });
+        }
+        const source = audioContext.createMediaStreamSource(
+            new MediaStream([audioTrack]),
+        );
+        const analyser = audioContext.createAnalyser();
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.6;
+        source.connect(analyser);
+        audioContextRef.current = audioContext;
+
+        const data = new Uint8Array(analyser.frequencyBinCount);
+
+        function tick() {
+            analyser.getByteFrequencyData(data);
+            const average =
+                data.reduce((sum, value) => sum + value, 0) / data.length / 255;
+            if (micMeterRef.current) {
+                micMeterRef.current.style.transform = `scaleX(${Math.min(1, average * 3)})`;
+            }
+            meterFrameRef.current = requestAnimationFrame(tick);
+        }
+        tick();
+    }
+
+    function stopMicMeter() {
+        if (meterFrameRef.current !== null) {
+            cancelAnimationFrame(meterFrameRef.current);
+            meterFrameRef.current = null;
+        }
+        if (audioContextRef.current) {
+            audioContextRef.current.close();
+            audioContextRef.current = null;
+        }
+        if (micMeterRef.current) {
+            micMeterRef.current.style.transform = "scaleX(0)";
         }
     }
 
     async function toggleMic() {
+        console.log("toggleMic clicked");
         const existingTrack = localStream.current?.getAudioTracks()[0];
 
         if (existingTrack) {
             existingTrack.stop();
             localStream.current!.removeTrack(existingTrack);
+            stopMicMeter();
 
             peerConnections.current.forEach((peerConnection) => {
                 const sender = peerConnection
@@ -123,6 +240,7 @@ function App() {
         }
 
         try {
+            setMediaError(null);
             const newStream = await navigator.mediaDevices.getUserMedia({
                 audio: true,
             });
@@ -132,6 +250,7 @@ function App() {
                 localStream.current = new MediaStream();
             }
             localStream.current.addTrack(audioTrack);
+            startMicMeter(audioTrack);
 
             peerConnections.current.forEach((peerConnection) => {
                 peerConnection.addTrack(audioTrack, localStream.current!);
@@ -141,6 +260,7 @@ function App() {
             console.log("mic enabled for the first time");
         } catch (error) {
             console.error("Failed to enable mic:", error);
+            setMediaError(`Microphone failed: ${describeMediaError(error)}`);
         }
     }
 
@@ -152,6 +272,7 @@ function App() {
         });
         peerConnections.current.clear();
         pendingCandidates.current.clear();
+        stopMicMeter();
         if (localStream.current) {
             localStream.current.getTracks().forEach((track) => track.stop());
             localStream.current = null;
@@ -162,10 +283,14 @@ function App() {
 
         setRoomId("");
         setRoomCount(0);
-        setInRoom(false);
         setCameraEnabled(false);
         setMicEnabled(false);
         setParticipants(new Map());
+        setParticipantNames(new Map());
+        setPendingRequests(new Map());
+        setIsHost(false);
+        setView("landing");
+        window.history.pushState({}, "", "/");
         console.log("left room, cleaned up all connections and media");
     }
 
@@ -182,11 +307,48 @@ function App() {
         roomStatusProcessed.current = messages.length;
 
         for (const message of newMessages) {
-            if (
-                message.type === "ROOM_CREATED" ||
-                message.type === "ROOM_JOINED"
-            ) {
-                queueMicrotask(() => setInRoom(true));
+            if (message.type === "ROOM_CREATED" && message.roomId) {
+                const newRoomId = message.roomId;
+                queueMicrotask(() => {
+                    setRoomId(newRoomId);
+                    setIsHost(true);
+                    setView("in-room");
+                });
+                window.history.pushState({}, "", `/r/${newRoomId}`);
+                continue;
+            }
+
+            if (message.type === "ROOM_JOINED" && message.roomId) {
+                const newRoomId = message.roomId;
+                const roster = message.participants ?? [];
+                queueMicrotask(() => {
+                    setRoomId(newRoomId);
+                    setIsHost(false);
+                    setView("in-room");
+                    setParticipantNames((prev) => {
+                        const next = new Map(prev);
+                        roster.forEach((p) => next.set(p.clientId, p.displayName));
+                        return next;
+                    });
+                });
+                window.history.pushState({}, "", `/r/${newRoomId}`);
+                continue;
+            }
+
+            if (message.type === "JOIN_DENIED") {
+                queueMicrotask(() => {
+                    setView("landing");
+                    setFormError("The host denied your request to join.");
+                });
+                continue;
+            }
+
+            if (message.type === "ERROR" && message.message) {
+                const errorText = message.message;
+                queueMicrotask(() => {
+                    setFormError(errorText);
+                    setView((current) => (current === "waiting" ? "landing" : current));
+                });
                 continue;
             }
 
@@ -196,6 +358,41 @@ function App() {
             ) {
                 const count = message.count;
                 queueMicrotask(() => setRoomCount(count));
+            }
+        }
+    }, [messages]);
+
+    useEffect(() => {
+        const newMessages = messages.slice(joinRequestProcessed.current);
+        joinRequestProcessed.current = messages.length;
+
+        for (const message of newMessages) {
+            if (
+                message.type === "JOIN_REQUEST" &&
+                message.clientId &&
+                message.displayName
+            ) {
+                const requesterId = message.clientId;
+                const requesterName = message.displayName;
+                queueMicrotask(() => {
+                    setPendingRequests((prev) => {
+                        const next = new Map(prev);
+                        next.set(requesterId, requesterName);
+                        return next;
+                    });
+                });
+                continue;
+            }
+
+            if (message.type === "JOIN_CANCELLED" && message.clientId) {
+                const cancelledId = message.clientId;
+                queueMicrotask(() => {
+                    setPendingRequests((prev) => {
+                        const next = new Map(prev);
+                        next.delete(cancelledId);
+                        return next;
+                    });
+                });
             }
         }
     }, [messages]);
@@ -229,6 +426,11 @@ function App() {
                         next.delete(viewerClientId);
                         return next;
                     });
+                    setParticipantNames((prev) => {
+                        const next = new Map(prev);
+                        next.delete(viewerClientId);
+                        return next;
+                    });
                 });
             }
         }
@@ -251,6 +453,15 @@ function App() {
             }
 
             const remoteClientId = message.clientId;
+            const remoteDisplayName = message.displayName ?? "Guest";
+            queueMicrotask(() => {
+                setParticipantNames((prev) => {
+                    const next = new Map(prev);
+                    next.set(remoteClientId, remoteDisplayName);
+                    return next;
+                });
+            });
+
             console.log(
                 "new participant joined, creating peerconnection:",
                 remoteClientId,
@@ -343,7 +554,7 @@ function App() {
                     send({
                         type: "OFFER",
                         targetClientId: remoteClientId,
-                        offer: peerConnection.localDescription,
+                        offer: peerConnection.localDescription!,
                     });
                     console.log("OFFER (re)sent to:", remoteClientId);
                 } catch (error) {
@@ -467,7 +678,7 @@ function App() {
                         send({
                             type: "OFFER",
                             targetClientId: remoteClientId,
-                            offer: peerConnection.localDescription,
+                            offer: peerConnection.localDescription!,
                         });
                         console.log("OFFER (re)sent to:", remoteClientId);
                     } catch (error) {
@@ -531,7 +742,7 @@ function App() {
                     send({
                         type: "ANSWER",
                         targetClientId: remoteClientId,
-                        answer: peerConnection.localDescription,
+                        answer: peerConnection.localDescription!,
                     });
 
                     console.log("ANSWER sent to:", remoteClientId);
@@ -646,52 +857,141 @@ function App() {
         }
     }, [messages]);
 
+    const roomLink = roomId ? `${window.location.origin}/r/${roomId}` : "";
+
+    function copyRoomLink() {
+        navigator.clipboard.writeText(roomLink).then(() => {
+            setLinkCopied(true);
+            setTimeout(() => setLinkCopied(false), 2000);
+        });
+    }
+
+    if (view === "landing") {
+        return (
+            <div className="landing">
+                <div className="landing-card">
+                    <h1>Live Streaming App</h1>
+                    <p className="subtitle">Start a room, or join one with a code</p>
+
+                    <input
+                        className="text-input"
+                        type="text"
+                        placeholder="Your name"
+                        value={displayName}
+                        onChange={(event) => setDisplayName(event.target.value)}
+                    />
+
+                    {formError && <p className="form-error">{formError}</p>}
+
+                    <button className="btn btn-primary" onClick={createRoom}>
+                        Create a room
+                    </button>
+
+                    <div className="divider">or</div>
+
+                    <div className="join-row">
+                        <input
+                            className="text-input"
+                            type="text"
+                            placeholder="Room code or link"
+                            value={joinCodeInput}
+                            onChange={(event) =>
+                                setJoinCodeInput(event.target.value)
+                            }
+                        />
+                        <button className="btn btn-secondary" onClick={requestToJoin}>
+                            Join
+                        </button>
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
+    if (view === "waiting") {
+        return (
+            <div className="landing">
+                <div className="landing-card">
+                    <div className="spinner" />
+                    <h2>Waiting for the host to let you in…</h2>
+                    <button className="btn btn-secondary" onClick={leaveRoom}>
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        );
+    }
+
     return (
-        <div>
-            <h1>Live streaming app</h1>
+        <div className="room">
+            <header className="room-header">
+                <div className="room-code-badge">
+                    <span>{roomId}</span>
+                    <button className="btn-link" onClick={copyRoomLink}>
+                        {linkCopied ? "Copied!" : "Copy link"}
+                    </button>
+                </div>
+                <div className="room-count">{roomCount} in room</div>
+                <button className="btn btn-leave" onClick={leaveRoom}>
+                    Leave
+                </button>
+            </header>
 
-            <input
-                type="text"
-                placeholder="Enter room Id"
-                value={roomId}
-                onChange={(event) => setRoomId(event.target.value)}
-            />
+            {isHost && pendingRequests.size > 0 && (
+                <div className="pending-panel">
+                    {Array.from(pendingRequests.entries()).map(
+                        ([requesterId, name]) => (
+                            <div className="pending-request" key={requesterId}>
+                                <span>
+                                    <strong>{name}</strong> wants to join
+                                </span>
+                                <div className="pending-actions">
+                                    <button
+                                        className="btn btn-primary btn-small"
+                                        onClick={() =>
+                                            respondToJoinRequest(requesterId, true)
+                                        }
+                                    >
+                                        Admit
+                                    </button>
+                                    <button
+                                        className="btn btn-secondary btn-small"
+                                        onClick={() =>
+                                            respondToJoinRequest(requesterId, false)
+                                        }
+                                    >
+                                        Deny
+                                    </button>
+                                </div>
+                            </div>
+                        ),
+                    )}
+                </div>
+            )}
 
-            <button onClick={createRoom}>Create Room</button>
-
-            <button onClick={joinRoom}>Join Room</button>
-
-            <button onClick={leaveRoom}>Leave Room</button>
-
-            <button onClick={toggleCamera}>
-                Camera: {cameraEnabled ? "On" : "Off"}
-            </button>
-
-            <button onClick={toggleMic}>
-                Mic: {micEnabled ? "On" : "Off"}
-            </button>
-
-            {inRoom && <p>People in room: {roomCount}</p>}
-
-            <div style={{ display: "flex", gap: "1rem", marginTop: "1rem" }}>
-                <div>
-                    <h3>Your camera (local preview)</h3>
+            <div
+                className={
+                    participants.size === 0 ? "tiles tiles-solo" : "tiles tiles-grid"
+                }
+            >
+                <div className="tile">
                     <video
                         ref={localVideoRef}
                         autoPlay
                         playsInline
                         muted
-                        style={{
-                            width: "320px",
-                            background: "#000",
-                            transform: "scaleX(-1)",
-                        }}
+                        className="tile-video tile-video-mirrored"
                     />
+                    <span className="tile-label">You</span>
+                    {micEnabled && (
+                        <div className="mic-meter-track">
+                            <div className="mic-meter-fill" ref={micMeterRef} />
+                        </div>
+                    )}
                 </div>
 
                 {Array.from(participants.entries()).map(([id, stream]) => (
-                    <div key={id}>
-                        <h3>Participant {id.slice(0, 8)}</h3>
+                    <div className="tile" key={id}>
                         <video
                             ref={(el) => {
                                 if (el) {
@@ -711,19 +1011,31 @@ function App() {
                             }}
                             autoPlay
                             playsInline
-                            style={{ width: "320px", background: "#000" }}
+                            className="tile-video"
                         />
+                        <span className="tile-label">
+                            {participantNames.get(id) ?? "Guest"}
+                        </span>
                     </div>
                 ))}
             </div>
 
-            <h2>Server Message</h2>
+            {mediaError && <p className="form-error media-error">{mediaError}</p>}
 
-            {messages.length > 0 && (
-                <pre>
-                    {JSON.stringify(messages[messages.length - 1], null, 2)}
-                </pre>
-            )}
+            <div className="controls">
+                <button
+                    className={`btn-control ${cameraEnabled ? "on" : "off"}`}
+                    onClick={toggleCamera}
+                >
+                    Camera {cameraEnabled ? "On" : "Off"}
+                </button>
+                <button
+                    className={`btn-control ${micEnabled ? "on" : "off"}`}
+                    onClick={toggleMic}
+                >
+                    Mic {micEnabled ? "On" : "Off"}
+                </button>
+            </div>
         </div>
     );
 }
