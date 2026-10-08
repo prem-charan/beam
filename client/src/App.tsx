@@ -58,6 +58,7 @@ function App() {
     const [joinCodeInput, setJoinCodeInput] = useState(() => roomCodeFromPath());
     const [roomId, setRoomId] = useState("");
     const [isHost, setIsHost] = useState(false);
+    const [hostClientId, setHostClientId] = useState<string | null>(null);
     const [formError, setFormError] = useState<string | null>(null);
     const [linkCopied, setLinkCopied] = useState(false);
 
@@ -71,6 +72,12 @@ function App() {
     const [participantNames, setParticipantNames] = useState<
         Map<string, string>
     >(new Map());
+    const [showRoster, setShowRoster] = useState(false);
+    const rosterWrapperRef = useRef<HTMLDivElement | null>(null);
+    const [notifications, setNotifications] = useState<
+        { id: number; text: string }[]
+    >([]);
+    const notificationIdRef = useRef(0);
 
     const peerConnections = useRef(new Map<string, RTCPeerConnection>());
     const pendingCandidates = useRef(new Map<string, RTCIceCandidateInit[]>());
@@ -294,6 +301,14 @@ function App() {
         }
     }
 
+    function pushNotification(text: string) {
+        const id = notificationIdRef.current++;
+        setNotifications((prev) => [...prev, { id, text }]);
+        setTimeout(() => {
+            setNotifications((prev) => prev.filter((n) => n.id !== id));
+        }, 4000);
+    }
+
     function leaveRoom() {
         send({ type: "LEAVE_ROOM" });
 
@@ -319,6 +334,9 @@ function App() {
         setParticipantNames(new Map());
         setPendingRequests(new Map());
         setIsHost(false);
+        setHostClientId(null);
+        setShowRoster(false);
+        setNotifications([]);
         setView("landing");
         window.history.pushState({}, "", "/");
         console.log("left room, cleaned up all connections and media");
@@ -332,6 +350,29 @@ function App() {
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
+    // Closes the roster dropdown on any click outside it. Only attached
+    // while the dropdown is actually open, so there's no listener sitting
+    // around doing nothing the rest of the time.
+    useEffect(() => {
+        if (!showRoster) {
+            return;
+        }
+
+        function handleClickOutside(event: MouseEvent) {
+            if (
+                rosterWrapperRef.current &&
+                !rosterWrapperRef.current.contains(event.target as Node)
+            ) {
+                setShowRoster(false);
+            }
+        }
+
+        document.addEventListener("mousedown", handleClickOutside);
+        return () => {
+            document.removeEventListener("mousedown", handleClickOutside);
+        };
+    }, [showRoster]);
+
     useEffect(() => {
         const newMessages = messages.slice(roomStatusProcessed.current);
         roomStatusProcessed.current = messages.length;
@@ -342,6 +383,7 @@ function App() {
                 queueMicrotask(() => {
                     setRoomId(newRoomId);
                     setIsHost(true);
+                    setHostClientId(clientId);
                     setView("in-room");
                 });
                 window.history.pushState({}, "", `/r/${newRoomId}`);
@@ -351,9 +393,12 @@ function App() {
             if (message.type === "ROOM_JOINED" && message.roomId) {
                 const newRoomId = message.roomId;
                 const roster = message.participants ?? [];
+                // the server always lists the host first in the roster
+                const hostId = roster[0]?.clientId ?? null;
                 queueMicrotask(() => {
                     setRoomId(newRoomId);
                     setIsHost(false);
+                    setHostClientId(hostId);
                     setView("in-room");
                     setParticipantNames((prev) => {
                         const next = new Map(prev);
@@ -434,12 +479,17 @@ function App() {
         for (const message of newMessages) {
             if (message.type === "HOST_LEFT") {
                 console.log("host left the room, cleaning up");
-                queueMicrotask(() => leaveRoom());
+                queueMicrotask(() => {
+                    setFormError("The host left the room.");
+                    leaveRoom();
+                });
                 continue;
             }
 
             if (message.type === "VIEWER_LEFT" && message.clientId) {
                 const viewerClientId = message.clientId;
+                const departedName =
+                    participantNames.get(viewerClientId) ?? "Someone";
                 console.log("viewer left:", viewerClientId);
 
                 const peerConnection =
@@ -461,6 +511,7 @@ function App() {
                         next.delete(viewerClientId);
                         return next;
                     });
+                    pushNotification(`${departedName} left the room`);
                 });
             }
         }
@@ -946,6 +997,14 @@ function App() {
 
     return (
         <div className="room">
+            <div className="toast-stack">
+                {notifications.map((n) => (
+                    <div className="toast" key={n.id}>
+                        {n.text}
+                    </div>
+                ))}
+            </div>
+
             <header className="room-header">
                 <div className="room-code-badge">
                     <span>{roomId}</span>
@@ -953,7 +1012,55 @@ function App() {
                         {linkCopied ? "Copied!" : "Copy link"}
                     </button>
                 </div>
-                <div className="room-count">{roomCount} in room</div>
+
+                <div className="people-wrapper" ref={rosterWrapperRef}>
+                    <button
+                        className="people-button"
+                        onClick={() => setShowRoster((prev) => !prev)}
+                    >
+                        <svg
+                            width="16"
+                            height="16"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                        >
+                            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                            <circle cx="9" cy="7" r="4" />
+                            <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                            <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                        </svg>
+                        <span>{roomCount}</span>
+                    </button>
+
+                    {showRoster && (
+                        <div className="roster-dropdown">
+                            <div className="roster-entry">
+                                {displayName || "You"}{" "}
+                                <span className="roster-you">
+                                    (You{clientId === hostClientId ? " · Host" : ""})
+                                </span>
+                            </div>
+                            {Array.from(participantNames.entries()).map(
+                                ([id, name]) => (
+                                    <div className="roster-entry" key={id}>
+                                        {name}
+                                        {id === hostClientId && (
+                                            <span className="roster-you">
+                                                {" "}
+                                                (Host)
+                                            </span>
+                                        )}
+                                    </div>
+                                ),
+                            )}
+                        </div>
+                    )}
+                </div>
+
                 <button className="btn btn-leave" onClick={leaveRoom}>
                     Leave
                 </button>
