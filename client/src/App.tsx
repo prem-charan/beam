@@ -20,6 +20,36 @@ function extractRoomCode(input: string): string {
     return (pathMatch ? pathMatch[1] : trimmed).toUpperCase();
 }
 
+// STUN is tried first (direct peer-to-peer); TURN is the fallback relay used
+// only when a direct connection isn't possible (symmetric NAT, strict
+// firewalls). TURN credentials come from .env (see .env.example) rather than
+// being hardcoded, so a real password never sits in git history. If the env
+// vars aren't set (e.g. local dev without a .env file), we just fall back to
+// STUN-only rather than sending a broken TURN entry.
+const turnHost = import.meta.env.VITE_TURN_HOST;
+const turnUsername = import.meta.env.VITE_TURN_USERNAME;
+const turnCredential = import.meta.env.VITE_TURN_CREDENTIAL;
+
+// VITE_TURN_HOST may or may not already include a port (ExpressTURN's own
+// docs give it as "host:3478"), so only append the default port if the
+// value doesn't already contain one — otherwise we'd end up with
+// "turn:host:3478:3478", which is exactly the bug that showed up here.
+const turnHostWithPort =
+    turnHost && !turnHost.includes(":") ? `${turnHost}:3478` : turnHost;
+
+const ICE_SERVERS: RTCIceServer[] = [
+    { urls: "stun:stun.l.google.com:19302" },
+    ...(turnHostWithPort && turnUsername && turnCredential
+        ? [
+              {
+                  urls: `turn:${turnHostWithPort}`,
+                  username: turnUsername,
+                  credential: turnCredential,
+              },
+          ]
+        : []),
+];
+
 function App() {
     const { send, messages, clientId } = useWebSocket();
 
@@ -467,11 +497,7 @@ function App() {
                 remoteClientId,
             );
             const peerConnection = new RTCPeerConnection({
-                iceServers: [
-                    {
-                        urls: "stun:stun.l.google.com:19302",
-                    },
-                ],
+                iceServers: ICE_SERVERS,
             });
 
             peerConnections.current.set(remoteClientId, peerConnection);
@@ -608,11 +634,7 @@ function App() {
             const peerConnection =
                 existingConnection ??
                 new RTCPeerConnection({
-                    iceServers: [
-                        {
-                            urls: "stun:stun.l.google.com:19302",
-                        },
-                    ],
+                    iceServers: ICE_SERVERS,
                 });
 
             if (!existingConnection) {
