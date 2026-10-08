@@ -943,7 +943,7 @@ function App() {
         return (
             <div className="landing">
                 <div className="landing-card">
-                    <h1>Live Streaming App</h1>
+                    <h1>Beam</h1>
                     <p className="subtitle">Start a room, or join one with a code</p>
 
                     <input

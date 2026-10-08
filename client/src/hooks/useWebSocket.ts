@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import type { Message } from "@live-streaming-app/shared";
+import type { Message } from "@beam/shared";
 
 export function useWebSocket() {
     const socketRef = useRef<WebSocket | null>(null);

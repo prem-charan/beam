@@ -1,5 +1,5 @@
 {
-  "name": "@live-streaming-app/shared",
+  "name": "@beam/shared",
   "version": "1.0.0",
   "private": true,
   "type": "module",

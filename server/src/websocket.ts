@@ -8,7 +8,7 @@ import {
 } from "./rooms.js";
 import { randomUUID } from "crypto";
 import { WebSocket } from "ws";
-import type { Message } from "@live-streaming-app/shared";
+import type { Message } from "@beam/shared";
 
 const clients = new Map<string, WebSocket>(); // mapping clients to websocket
 const clientRooms = new Map<string, string>(); // mapping clients to rooms
