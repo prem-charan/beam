@@ -7,7 +7,9 @@ export function useWebSocket() {
     const [clientId, setclientId] = useState<string | null>(null);
 
     useEffect(() => {
-        const socket = new WebSocket("ws://localhost:3000");
+        const socket = new WebSocket(
+            import.meta.env.VITE_WS_URL ?? "ws://localhost:3000",
+        );
         socketRef.current = socket;
         socket.onopen = () => {
             console.log("websocket connected");

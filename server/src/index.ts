@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { setupWebSocket } from "./websocket.js";
 
-const PORT = 3000;
+const PORT = process.env.PORT ?? 3000;
 
 const server = createServer((req, res) => {
     res.writeHead(200, {
