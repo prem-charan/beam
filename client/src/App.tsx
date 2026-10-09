@@ -78,6 +78,7 @@ function App() {
         { id: number; text: string }[]
     >([]);
     const notificationIdRef = useRef(0);
+    const wakeLockRef = useRef<WakeLockSentinel | null>(null);
 
     const peerConnections = useRef(new Map<string, RTCPeerConnection>());
     const pendingCandidates = useRef(new Map<string, RTCIceCandidateInit[]>());
@@ -373,6 +374,49 @@ function App() {
         };
     }, [showRoster]);
 
+    // Keeps the screen (and therefore the tab) awake while hosting, since a
+    // locked/backgrounded phone is the single biggest real-world cause of a
+    // host's connection dropping mid-call. The lock only fights automatic
+    // sleep - it can't stop someone manually switching apps - which is why
+    // this is paired with the server-side grace period + reconnect above
+    // rather than relied on alone.
+    useEffect(() => {
+        if (!isHost || view !== "in-room" || !("wakeLock" in navigator)) {
+            return;
+        }
+
+        let released = false;
+
+        async function acquire() {
+            try {
+                const lock = await navigator.wakeLock.request("screen");
+                if (released) {
+                    lock.release();
+                    return;
+                }
+                wakeLockRef.current = lock;
+            } catch (error) {
+                console.error("Wake lock request failed:", error);
+            }
+        }
+
+        acquire();
+
+        function handleVisibilityChange() {
+            if (document.visibilityState === "visible" && !wakeLockRef.current) {
+                acquire();
+            }
+        }
+        document.addEventListener("visibilitychange", handleVisibilityChange);
+
+        return () => {
+            released = true;
+            document.removeEventListener("visibilitychange", handleVisibilityChange);
+            wakeLockRef.current?.release();
+            wakeLockRef.current = null;
+        };
+    }, [isHost, view]);
+
     useEffect(() => {
         const newMessages = messages.slice(roomStatusProcessed.current);
         roomStatusProcessed.current = messages.length;
@@ -407,6 +451,27 @@ function App() {
                     });
                 });
                 window.history.pushState({}, "", `/r/${newRoomId}`);
+                continue;
+            }
+
+            if (message.type === "RECONNECTED" && message.roomId) {
+                const resumedRoomId = message.roomId;
+                const resumedIsHost = !!message.isHost;
+                const roster = message.participants ?? [];
+                const hostId = roster[0]?.clientId ?? null;
+                console.log(`resumed room ${resumedRoomId} after a dropped connection`);
+                queueMicrotask(() => {
+                    setRoomId(resumedRoomId);
+                    setIsHost(resumedIsHost);
+                    setHostClientId(hostId);
+                    setView("in-room");
+                    setParticipantNames((prev) => {
+                        const next = new Map(prev);
+                        roster.forEach((p) => next.set(p.clientId, p.displayName));
+                        return next;
+                    });
+                });
+                window.history.pushState({}, "", `/r/${resumedRoomId}`);
                 continue;
             }
 

@@ -17,6 +17,7 @@ export type Message = {
         | "HOST_LEFT"
         | "VIEWER_LEFT"
         | "ROOM_COUNT"
+        | "RECONNECTED"
         | "ERROR";
     roomId?: string;
     clientId?: string;
@@ -25,6 +26,7 @@ export type Message = {
     message?: string;
     displayName?: string;
     approved?: boolean;
+    isHost?: boolean;
     participants?: { clientId: string; displayName: string }[];
     offer?: RTCSessionDescriptionInit;
     answer?: RTCSessionDescriptionInit;
