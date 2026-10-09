@@ -1,6 +1,6 @@
 # Beam
 
-A small, no-frills video calling app — think Google Meet, built from scratch to actually understand how WebRTC works instead of just importing a library. No accounts, no database. Create a room, share the link, talk.
+A small, frictionless video calling app — think Google Meet, built from scratch to actually understand how WebRTC works instead of just importing a library. No accounts, no database. Create a room, share the link, talk.
 
 ## What it does
 
@@ -20,12 +20,36 @@ A small, no-frills video calling app — think Google Meet, built from scratch t
 
 **Survives a dropped connection.** If a host's phone locks or the app gets backgrounded for a moment, the room doesn't instantly collapse — the server holds it open for a short grace period, and the client automatically reconnects and resumes right where it left off, including replaying any join requests that came in while the connection was down. While actively hosting, Beam also requests a screen wake lock so the phone's screen doesn't sleep and trigger this in the first place.
 
-## How it's built
+## Tech stack
 
-- **Client:** React 19 + Vite, plain TypeScript, no UI framework — hand-rolled CSS.
-- **Signaling:** a raw WebSocket server (Node + the `ws` library, no Socket.IO) that only ever relays small JSON messages — room creation, join requests, WebRTC offers/answers/ICE candidates. It never touches the actual audio/video.
-- **Media:** native browser WebRTC APIs (`RTCPeerConnection`, `getUserMedia`) end to end — nothing wrapping it.
-- **Monorepo:** pnpm workspaces with three packages — `client/`, `server/`, and `shared/` (just the TypeScript types both sides agree on).
+**Frontend**
+- React 19
+- TypeScript
+- Vite 8 (Rolldown-based build)
+- Plain CSS
+
+**Backend**
+- Node.js
+- TypeScript
+- `ws` — a raw WebSocket library. The server only ever relays small JSON messages (room creation, join requests, WebRTC offers/answers/ICE candidates)
+
+**Real-time / media**
+- WebRTC (`RTCPeerConnection`, `getUserMedia`) — native browser APIs end to end
+- STUN/TURN via ExpressTURN, for NAT traversal on restrictive networks
+- Web Audio API (`AnalyserNode`) — drives the live mic volume meter
+
+**Infrastructure / deployment**
+- Vercel — static client hosting
+- Google Cloud Platform — e2-micro VM, Always Free tier, for the signaling server
+- Caddy — reverse proxy + automatic Let's Encrypt TLS
+- systemd — process supervision on the VM
+- DuckDNS — free subdomain/DNS
+
+**Tooling**
+- pnpm workspaces — monorepo with three packages: `client/`, `server/`, and `shared/`
+- ESLint + typescript-eslint
+
+There's no database and no auth provider anywhere in this list — room state only ever lives in memory on the server for as long as a room has people in it.
 
 ## Running it locally
 
