@@ -135,7 +135,7 @@ export function setupWebSocket(server: Server) {
                         );
                         return;
                     }
-                    const roomId = message.roomId.trim().toUpperCase();
+                    const roomId = message.roomId.trim().toLowerCase();
                     const room = getRoom(roomId);
                     if (!room) {
                         socket.send(

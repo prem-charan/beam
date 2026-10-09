@@ -16,7 +16,7 @@ const rooms = new Map<string, Room>();
 
 // Excludes visually ambiguous characters (0/O, 1/I/L) so a spoken or
 // handwritten code is never misread.
-const CODE_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+const CODE_CHARS = "abcdefghjkmnpqrstuvwxyz23456789";
 
 export function generateRoomCode(): string {
     let code: string;

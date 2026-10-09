@@ -6,7 +6,7 @@ type View = "landing" | "waiting" | "in-room";
 
 function roomCodeFromPath(): string {
     const match = window.location.pathname.match(/^\/r\/([A-Za-z0-9]{6})$/);
-    return match ? match[1].toUpperCase() : "";
+    return match ? match[1].toLowerCase() : "";
 }
 
 // Accepts either a bare code ("AB3XQ9") or a full pasted link
@@ -17,7 +17,7 @@ function roomCodeFromPath(): string {
 function extractRoomCode(input: string): string {
     const trimmed = input.trim();
     const pathMatch = trimmed.match(/\/r\/([A-Za-z0-9]{6})/);
-    return (pathMatch ? pathMatch[1] : trimmed).toUpperCase();
+    return (pathMatch ? pathMatch[1] : trimmed).toLowerCase();
 }
 
 // STUN is tried first (direct peer-to-peer); TURN is the fallback relay used
