@@ -190,6 +190,12 @@ button {
 
 .room {
     height: 100vh;
+    /* 100vh on mobile browsers is based on the viewport with the address bar
+       hidden - taller than what's actually visible on load - which is what
+       was pushing the controls below the fold. 100dvh tracks the real
+       visible viewport instead; the 100vh line above stays as a fallback
+       for browsers that don't support dvh. */
+    height: 100dvh;
     display: flex;
     flex-direction: column;
     padding: 0.85rem;
@@ -435,4 +441,23 @@ button {
 .btn-control.off {
     background: var(--surface);
     color: var(--text-muted);
+}
+
+/* On narrow/mobile screens, cap how much of the screen the video tiles are
+   allowed to take so the controls always sit comfortably visible below
+   them, instead of flex:1 letting the video eat all remaining space. */
+@media (max-width: 640px) {
+    .room {
+        padding: 0.6rem;
+        gap: 0.5rem;
+    }
+
+    .tiles {
+        flex: 0 1 auto;
+        max-height: 55dvh;
+    }
+
+    .controls {
+        padding: 0.4rem 0;
+    }
 }
